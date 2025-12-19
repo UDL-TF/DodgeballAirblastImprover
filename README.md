@@ -1,8 +1,8 @@
-# UDLUltra
+# Dodgeball Airblast Hitreg Improver
 
 **Ultra-Light Dodgeball Hitreg Consistency Plugin for TF2**
 
-UDLUltra is a server-side SourcePawn plugin designed to improve **airblast consistency** in Team Fortress 2 dodgeball without altering visible gameplay, balance, or skill ceiling.
+This plugin is a server-side SourcePawn plugin designed to improve **airblast consistency** in Team Fortress 2 dodgeball without altering visible gameplay, balance, or skill ceiling.
 
 The plugin compensates for **32-bit Source Engine tick discretization**, projectile tunneling, and human reaction variance — making dodgeball *feel* correct rather than easier.
 
@@ -33,13 +33,13 @@ On 32-bit TF2 servers:
 - High-speed dodgeball rockets can "skip" reflect checks
 - Players experience phantom misses and inconsistent timing
 
-UDLUltra **undoes these limitations** without modifying the engine.
+This plugin **undoes these limitations** without modifying the engine.
 
 ---
 
-## Feature Stack (UDLUltra)
+## Feature Stack
 
-UDLUltra is composed of five independent systems that stack together:
+This plugin is composed of five independent systems that stack together:
 
 1. **Grace Window on Timing** (Micro-Latency Buffer)
 2. **Target Bias Assistance** (Lock-On Favoring)
@@ -308,7 +308,7 @@ Designed for 32-bit server stability.
 
 ## Summary
 
-UDLUltra does not make dodgeball easier.
+This plugin does not make dodgeball easier.
 
 It makes dodgeball behave correctly under:
 - 32-bit limitations
