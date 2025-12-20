@@ -85,6 +85,8 @@ public void OnPluginStart()
 	g_hCvarSphereMaxRange   = CreateConVar("sm_tfdb_airblast_max_range", "275.0", "Hard maximum straight-line airblast range for rockets (0 = no cap)");
 	g_hCvarSphereDebug      = CreateConVar("sm_tfdb_airblast_sphere_debug", "0", "Print debug when sphere gate cancels a rocket deflect (1=on,0=off)");
 
+	AutoExecConfig(true, "DodgeballAirblastImprover", "sourcemod");
+
 	HookEvent("player_spawn", UDL_OnPlayerSpawn, EventHookMode_Post);
 
 	for (int client = 1; client <= MaxClients; client++)
