@@ -62,14 +62,15 @@ TF2Attrib_SetByName(weapon, "deflection size multiplier", 0.2);
 
 This value is chosen to be a small, noticeable bump in reflect consistency rather than a dramatic range increase.
 
-Additionally, the plugin hooks the TF2Dodgeball forward `TFDB_OnRocketDeflectPre` and applies an extra, purely restrictive spherical check plus a hard straight-line range cap:
+Additionally, the plugin hooks both the TF2Dodgeball forward `TFDB_OnRocketDeflectPre` and `OnPlayerRunCmd` and applies an extra, purely restrictive spherical check plus a hard straight-line range cap:
 
 - Uses the Pyro’s eye position as the center of a sphere.
-- Derives a radius from a base cube edge length (default `256.0` units, matching the stock cube) and the current `deflection size multiplier` value on the flamethrower.
+- Derives a radius from a base cube edge length (default `256.0` units, matching the stock cube) and the current `deflection size multiplier` value on the flamethrower, then optionally scales it with a cvar.
 - Clamps that radius to a configurable hard maximum straight-line range (default `256.0` units) so rockets cannot be deflected beyond the pink “cutoff” line even if the underlying sphere would reach further.
-- If the rocket is outside this clamped radius when the engine would normally deflect it, the plugin cancels the deflect by resetting the rocket’s event deflection counter and stopping the forward.
+- When the Pyro presses airblast in dodgeball and no rocket is within this sphere, the plugin temporarily enables the `airblast_deflect_projectiles_disabled` flag on the flamethrower for that command, so the airblast still fires but cannot deflect projectiles at all outside the spherical cutoff.
+- When TF2Dodgeball reports a deflect via `TFDB_OnRocketDeflectPre`, the plugin performs the same distance check and, if the rocket is outside the clamped radius, stops additional dodgeball-side deflect handling by syncing the event deflection counter and stopping the forward.
 
-This preserves the stock engine cube as the primary detection volume and the TF attribute as the only “range increase” knob, while enforcing a simple radial cutoff (the “pink line” in design diagrams) that does not depend on yaw, angle, or distance scaling tricks.
+This preserves the stock engine cube as the primary detection volume and the TF attribute as the only “range increase” knob, while enforcing a simple radial cutoff (the “pink line” in design diagrams) that does not depend on yaw, angle, or distance scaling tricks. The Pyro still gets normal airblast input and visual feedback; the plugin only decides whether the boosted range should apply and whether TF2Dodgeball should treat the reflect as valid.
 
 ---
 
@@ -78,7 +79,7 @@ This preserves the stock engine cube as the primary detection volume and the TF 
 - Requires TF2Dodgeball (`TF2Dodgeball.smx`) and `tf2attributes.smx`.
 - Only touches:
   - Pyro primary flamethrower in dodgeball.
-  - The `deflection size multiplier` attribute.
+  - The `deflection size multiplier` attribute and the `airblast_deflect_projectiles_disabled` flag.
   - TF2Dodgeball’s rocket deflect handling via `TFDB_OnRocketDeflectPre`, and only to *reject* deflects that fall outside the configured sphere.
 - Does not:
   - Modify stock TF2 outside dodgeball.
