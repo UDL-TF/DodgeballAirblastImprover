@@ -1,0 +1,465 @@
+#include <sourcemod>
+#include <sdktools>
+#include <tf2>
+#include <tf2_stocks>
+#include <tf2attributes>
+#include <tfdb>
+
+public Plugin myinfo =
+{
+	name = "TFDB Airblast Hitreg Improver",
+	author = "Darka, Tolfx",
+	description = "Dodgeball airblast consistency assistance and fix",
+	version = "1.0.0",
+	url = "udl.tf"
+};
+
+ConVar g_hCvarSphereGateEnable;
+ConVar g_hCvarSphereBaseSize;
+ConVar g_hCvarSphereScale;
+ConVar g_hCvarSphereMaxRange;
+ConVar g_hCvarSphereDebug;
+
+bool g_bSphereGateSuppressed[MAXPLAYERS + 1];
+float g_fSphereGateSavedMult[MAXPLAYERS + 1];
+
+static void UDL_ApplyAirblastAttributes(int client)
+{
+	if (!UDL_IsPyro(client))
+	{
+		return;
+	}
+
+	if (!LibraryExists("tfdb"))
+	{
+		return;
+	}
+
+	if (!TFDB_IsDodgeballEnabled())
+	{
+		return;
+	}
+
+	if (!LibraryExists("tf2attributes"))
+	{
+		return;
+	}
+
+	if (!TF2Attrib_IsReady())
+	{
+		return;
+	}
+
+	int weapon = GetPlayerWeaponSlot(client, TFWeaponSlot_Primary);
+	if (weapon <= MaxClients || !IsValidEntity(weapon))
+	{
+		return;
+	}
+
+	char classname[64];
+	GetEdictClassname(weapon, classname, sizeof(classname));
+	if (!StrEqual(classname, "tf_weapon_flamethrower", false))
+	{
+		return;
+	}
+
+	TF2Attrib_SetByName(weapon, "deflection size multiplier", 0.2);
+}
+
+public void UDL_OnPlayerSpawn(Event event, const char[] name, bool dontBroadcast)
+{
+	int client = GetClientOfUserId(event.GetInt("userid"));
+	if (client <= 0 || client > MaxClients)
+	{
+		return;
+	}
+
+	UDL_ApplyAirblastAttributes(client);
+}
+
+public void OnPluginStart()
+{
+	g_hCvarSphereGateEnable = CreateConVar("sm_tfdb_airblast_sphere_enable", "1", "Enable additional sphere-based gate for rocket deflects (1=on,0=off)");
+	g_hCvarSphereBaseSize   = CreateConVar("sm_tfdb_airblast_sphere_base", "256.0", "Base size used to derive sphere radius (cube edge length)");
+	g_hCvarSphereScale      = CreateConVar("sm_tfdb_airblast_sphere_scale", "1.0", "Extra scalar applied to computed sphere radius");
+	g_hCvarSphereMaxRange   = CreateConVar("sm_tfdb_airblast_max_range", "275.0", "Hard maximum straight-line airblast range for rockets (0 = no cap)");
+	g_hCvarSphereDebug      = CreateConVar("sm_tfdb_airblast_sphere_debug", "0", "Print debug when sphere gate cancels a rocket deflect (1=on,0=off)");
+
+	AutoExecConfig(true, "DodgeballAirblastImprover", "sourcemod");
+
+	HookEvent("player_spawn", UDL_OnPlayerSpawn, EventHookMode_Post);
+
+	for (int client = 1; client <= MaxClients; client++)
+	{
+		if (IsClientInGame(client))
+		{
+			UDL_ApplyAirblastAttributes(client);
+		}
+	}
+}
+
+static bool UDL_IsClientValid(int client)
+{
+	return client > 0 && client <= MaxClients && IsClientInGame(client) && IsPlayerAlive(client);
+}
+
+static bool UDL_IsPyro(int client)
+{
+	if (!UDL_IsClientValid(client))
+	{
+		return false;
+	}
+
+	if (TF2_GetPlayerClass(client) != TFClass_Pyro)
+	{
+		return false;
+	}
+
+	return true;
+}
+
+static float UDL_GetDeflectionSizeMultiplier(int client)
+{
+	float mult = 0.0;
+
+	if (!LibraryExists("tf2attributes"))
+	{
+		return mult;
+	}
+
+	if (!TF2Attrib_IsReady())
+	{
+		return mult;
+	}
+
+	int weapon = GetPlayerWeaponSlot(client, TFWeaponSlot_Primary);
+	if (weapon <= MaxClients || !IsValidEntity(weapon))
+	{
+		return mult;
+	}
+
+	char classname[64];
+	GetEdictClassname(weapon, classname, sizeof(classname));
+	if (!StrEqual(classname, "tf_weapon_flamethrower", false))
+	{
+		return mult;
+	}
+
+	Address attr = TF2Attrib_GetByName(weapon, "deflection size multiplier");
+	if (attr != Address_Null)
+	{
+		mult = TF2Attrib_GetValue(attr);
+	}
+
+	return mult;
+}
+
+static float UDL_ComputeSphereRadius(int client)
+{
+	float baseEdge = g_hCvarSphereBaseSize.FloatValue;
+	float mult = UDL_GetDeflectionSizeMultiplier(client);
+	float scale = 1.0 + mult;
+	float radius = (baseEdge * scale * 0.5) * g_hCvarSphereScale.FloatValue;
+
+	return radius;
+}
+
+static bool UDL_IsAnyRocketInSphere(int client, float radius)
+{
+	if (radius <= 0.0)
+	{
+		return false;
+	}
+
+	float center[3];
+	GetClientEyePosition(client, center);
+
+	float radiusSq = radius * radius;
+
+	for (int i = 0; i < MAX_ROCKETS; i++)
+	{
+		if (!TFDB_IsValidRocket(i))
+		{
+			continue;
+		}
+
+		int rocketEnt = TFDB_GetRocketEntity(i);
+		if (rocketEnt <= MaxClients || !IsValidEntity(rocketEnt))
+		{
+			continue;
+		}
+
+		float rocketPos[3];
+		GetEntPropVector(rocketEnt, Prop_Send, "m_vecOrigin", rocketPos);
+
+		float distSq = GetVectorDistance(center, rocketPos, true);
+		if (distSq <= radiusSq)
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+static void UDL_SuppressDeflectAttribute(int client)
+{
+	if (g_bSphereGateSuppressed[client])
+	{
+		return;
+	}
+
+	if (!LibraryExists("tf2attributes"))
+	{
+		return;
+	}
+
+	if (!TF2Attrib_IsReady())
+	{
+		return;
+	}
+
+	int weapon = GetPlayerWeaponSlot(client, TFWeaponSlot_Primary);
+	if (weapon <= MaxClients || !IsValidEntity(weapon))
+	{
+		return;
+	}
+
+	char classname[64];
+	GetEdictClassname(weapon, classname, sizeof(classname));
+	if (!StrEqual(classname, "tf_weapon_flamethrower", false))
+	{
+		return;
+	}
+
+	Address attr = TF2Attrib_GetByName(weapon, "deflection size multiplier");
+	float mult = 0.0;
+	if (attr != Address_Null)
+	{
+		mult = TF2Attrib_GetValue(attr);
+	}
+
+	g_fSphereGateSavedMult[client] = mult;
+	g_bSphereGateSuppressed[client] = true;
+
+	TF2Attrib_SetByName(weapon, "airblast_deflect_projectiles_disabled", 1.0);
+}
+
+static void UDL_RestoreDeflectAttribute(int client)
+{
+	if (client <= 0 || client > MaxClients)
+	{
+		return;
+	}
+
+	if (!g_bSphereGateSuppressed[client])
+	{
+		return;
+	}
+
+	if (!UDL_IsPyro(client))
+	{
+		g_bSphereGateSuppressed[client] = false;
+		return;
+	}
+
+	if (!LibraryExists("tf2attributes"))
+	{
+		g_bSphereGateSuppressed[client] = false;
+		return;
+	}
+
+	if (!TF2Attrib_IsReady())
+	{
+		g_bSphereGateSuppressed[client] = false;
+		return;
+	}
+
+	int weapon = GetPlayerWeaponSlot(client, TFWeaponSlot_Primary);
+	if (weapon <= MaxClients || !IsValidEntity(weapon))
+	{
+		g_bSphereGateSuppressed[client] = false;
+		return;
+	}
+
+	char classname[64];
+	GetEdictClassname(weapon, classname, sizeof(classname));
+	if (!StrEqual(classname, "tf_weapon_flamethrower", false))
+	{
+		g_bSphereGateSuppressed[client] = false;
+		return;
+	}
+
+	TF2Attrib_RemoveByName(weapon, "airblast_deflect_projectiles_disabled");
+
+	float mult = g_fSphereGateSavedMult[client];
+	if (mult <= 0.0)
+	{
+		mult = 0.2;
+	}
+
+	TF2Attrib_SetByName(weapon, "deflection size multiplier", mult);
+	g_bSphereGateSuppressed[client] = false;
+}
+
+public Action OnPlayerRunCmd(int client, int &buttons, int &impulse, float vel[3], float angles[3], int &weapon, int &subtype, int &cmdnum, int &tickcount, int &seed, int mouse[2])
+{
+	if (!g_hCvarSphereGateEnable.BoolValue)
+	{
+		if (g_bSphereGateSuppressed[client])
+		{
+			UDL_RestoreDeflectAttribute(client);
+		}
+		return Plugin_Continue;
+	}
+
+	if (!UDL_IsPyro(client))
+	{
+		if (g_bSphereGateSuppressed[client])
+		{
+			UDL_RestoreDeflectAttribute(client);
+		}
+		return Plugin_Continue;
+	}
+
+	if (!TFDB_IsDodgeballEnabled())
+	{
+		if (g_bSphereGateSuppressed[client])
+		{
+			UDL_RestoreDeflectAttribute(client);
+		}
+		return Plugin_Continue;
+	}
+
+	if (!(buttons & IN_ATTACK2))
+	{
+		if (g_bSphereGateSuppressed[client])
+		{
+			UDL_RestoreDeflectAttribute(client);
+		}
+		return Plugin_Continue;
+	}
+
+	float radius = UDL_ComputeSphereRadius(client);
+	float eye[3];
+	float eyeAngles[3];
+	float dir[3];
+
+	GetClientEyePosition(client, eye);
+	GetClientEyeAngles(client, eyeAngles);
+	GetAngleVectors(eyeAngles, dir, NULL_VECTOR, NULL_VECTOR);
+
+	float maxRange = g_hCvarSphereMaxRange.FloatValue;
+
+	bool anyNear = false;
+	bool anyAllowed = false;
+
+	for (int i = 0; i < MAX_ROCKETS; i++)
+	{
+		if (!TFDB_IsValidRocket(i))
+		{
+			continue;
+		}
+
+		int rocketEnt = TFDB_GetRocketEntity(i);
+		if (rocketEnt <= MaxClients || !IsValidEntity(rocketEnt))
+		{
+			continue;
+		}
+
+		float rocketPos[3];
+		GetEntPropVector(rocketEnt, Prop_Send, "m_vecOrigin", rocketPos);
+
+		float to[3];
+		to[0] = rocketPos[0] - eye[0];
+		to[1] = rocketPos[1] - eye[1];
+		to[2] = rocketPos[2] - eye[2];
+
+		float forwardDist = GetVectorDotProduct(to, dir);
+		if (forwardDist <= 0.0)
+		{
+			continue;
+		}
+
+		if (maxRange > 0.0 && forwardDist > maxRange)
+		{
+			continue;
+		}
+
+		anyNear = true;
+
+		float distSq = GetVectorDistance(eye, rocketPos, true);
+		if (distSq <= radius * radius)
+		{
+			anyAllowed = true;
+			break;
+		}
+	}
+
+	if (anyAllowed)
+	{
+		if (g_bSphereGateSuppressed[client])
+		{
+			UDL_RestoreDeflectAttribute(client);
+		}
+	}
+	else if (anyNear)
+	{
+		if (g_hCvarSphereDebug.BoolValue && UDL_IsClientValid(client))
+		{
+			PrintToChat(client, "[TFDB] Sphere gate blocking extended deflect: rocket outside sphere but within range (radius %.1f, max range %.1f)", radius, maxRange);
+		}
+		UDL_SuppressDeflectAttribute(client);
+	}
+	else
+	{
+		if (g_bSphereGateSuppressed[client])
+		{
+			UDL_RestoreDeflectAttribute(client);
+		}
+	}
+
+	return Plugin_Continue;
+}
+
+public Action TFDB_OnRocketDeflectPre(int iIndex, int iEntity, int iOwner, int &iTarget)
+{
+	if (!g_hCvarSphereGateEnable.BoolValue)
+	{
+		return Plugin_Continue;
+	}
+
+	if (!UDL_IsPyro(iOwner))
+	{
+		return Plugin_Continue;
+	}
+
+	if (!IsValidEntity(iEntity))
+	{
+		return Plugin_Continue;
+	}
+
+	float center[3];
+	GetClientEyePosition(iOwner, center);
+	float radius = UDL_ComputeSphereRadius(iOwner);
+
+	float rocketPos[3];
+	GetEntPropVector(iEntity, Prop_Send, "m_vecOrigin", rocketPos);
+
+	float dist = GetVectorDistance(center, rocketPos);
+	if (dist > radius)
+	{
+		if (g_hCvarSphereDebug.BoolValue)
+		{
+			if (UDL_IsClientValid(iOwner))
+			{
+				PrintToChat(iOwner, "[TFDB] Sphere gate blocked deflect: dist=%.1f, radius=%.1f", dist, radius);
+			}
+			PrintToServer("[TFDB] Sphere gate blocked deflect (owner %d, rocket %d): dist=%.1f, radius=%.1f", iOwner, iEntity, dist, radius);
+		}
+		TFDB_SetRocketEventDeflections(iIndex, TFDB_GetRocketDeflections(iIndex));
+		return Plugin_Stop;
+	}
+
+	return Plugin_Continue;
+}
