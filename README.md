@@ -1,319 +1,80 @@
-# UDLUltra
+# Dodgeball Airblast Hitreg Improver
 
-**Ultra-Light Dodgeball Hitreg Consistency Plugin for TF2**
+Ultra-light dodgeball airblast consistency plugin for TF2, now based entirely on real engine reflects.
 
-UDLUltra is a server-side SourcePawn plugin designed to improve **airblast consistency** in Team Fortress 2 dodgeball without altering visible gameplay, balance, or skill ceiling.
+This plugin is a server-side SourcePawn plugin that improves how reliable Pyro airblast feels in TF2 Dodgeball by slightly extending the actual flamethrower airblast range using `tf2attributes`, instead of doing synthetic or “second chance” reflects.
 
-The plugin compensates for **32-bit Source Engine tick discretization**, projectile tunneling, and human reaction variance — making dodgeball *feel* correct rather than easier.
+Rockets are still reflected by the game engine. The plugin only tweaks how far the airblast deflection volume reaches in dodgeball.
 
-Players will not perceive assistance.  
-They will perceive **clean hitreg**.
+---
+
+## What It Does Now
+
+- Uses `tf2attributes` to apply the `deflection size multiplier` attribute to Pyro flamethrowers while TF2Dodgeball is active.
+- Slightly increases the airblast deflection range so close calls that should have hit are more likely to register.
+- Only applies to dodgeball gameplay (when the TFDB plugin is running and dodgeball is enabled).
+- Does not perform any custom reflect logic, ray tracing, or “assist” reflects.
+
+The result is that reflects feel more consistent and less “just outside range”, without late, desynced, or obviously assisted deflections.
 
 ---
 
 ## Design Philosophy
 
-- Invisible assistance only
-- No automation or auto-reflect
-- No changes to flamethrower behavior
-- Dodgeball rockets only
-- Skill ceiling preserved
-- Server-side math corrections only
+- Real reflects only (no artificial `TFDB_ForceReflect` calls).
+- Adjust the underlying airblast attribute instead of simulating extra hits.
+- Dodgeball rockets only.
+- Preserve the skill ceiling and timing; keep the change subtle.
+- Server-side, configuration-free.
 
-If players can *tell* something is helping them, it's too much.
-
----
-
-## Why This Exists
-
-On 32-bit TF2 servers:
-
-- Airblast hit detection is discrete (≈256-unit cube)
-- Rockets can travel farther than the reflect volume in a single tick
-- High-speed dodgeball rockets can "skip" reflect checks
-- Players experience phantom misses and inconsistent timing
-
-UDLUltra **undoes these limitations** without modifying the engine.
+If players can tell something is helping them beyond what the engine would do, it is too much.
 
 ---
 
-## Feature Stack (UDLUltra)
+## Implementation Overview
 
-UDLUltra is composed of five independent systems that stack together:
+File: `scripting/DodgeballAirblastImprover.sp`
 
-1. **Grace Window on Timing** (Micro-Latency Buffer)
-2. **Target Bias Assistance** (Lock-On Favoring)
-3. **Sub-Tick Rocket Sweep**
-4. **Inflated Airblast Hull** (Server-Side Only)
-5. **Velocity-Scaled Forgiveness**
+The plugin:
 
-Each system is scoped, gated, and applied only to dodgeball rockets.
-
----
-
-## Rocket Tracking Infrastructure
-
-### Rocket Identification
-
-- Only rockets spawned by the dodgeball plugin are tracked
-- Stock TF2 projectiles are ignored
-
-### Per-Rocket State
-
-Each tracked rocket stores:
+- Includes `tf2attributes` and `tfdb`.
+- On plugin start, resets internal state and hooks the `player_spawn` event.
+- When a player spawns, and on map load for already connected players, it:
+  - Checks that TF2Dodgeball is available and enabled.
+  - Checks that `tf2attributes` is available and ready.
+  - If the client is a Pyro, finds their primary weapon and, if it is a flamethrower, applies:
 
 ```sourcepawn
-struct RocketData
-{
-    float lastPos[3];
-    float velocity[3];
-    int lockTarget;
-    int reflectCount;
-}
+TF2Attrib_SetByName(weapon, "deflection size multiplier", 0.2);
 ```
 
----
+This value is chosen to be a small, noticeable bump in reflect consistency rather than a dramatic range increase.
 
-## Feature Details
-
-### 1. Grace Window on Timing
-
-**Micro-Latency Buffer**
-
-#### Purpose
-
-Compensates for:
-- Human reaction variance
-- Network latency
-- Tick-based discretization
-
-#### Behavior
-
-A reflect succeeds if the Pyro airblasts slightly early or slightly late.
-
-#### Implementation
-
-Per-client storage:
-
-```sourcepawn
-float lastAirblastTime[MAXPLAYERS + 1];
-```
-
-On airblast:
-
-```sourcepawn
-lastAirblastTime[client] = GetGameTime();
-```
-
-On reflect eligibility:
-
-```sourcepawn
-if (Abs(GetGameTime() - lastAirblastTime[client]) <= 0.05)
-{
-    ReflectRocket();
-}
-```
-
-#### Notes
-
-- 50ms is below conscious perception
-- Removes "I swear I hit that" frustration
-- Feels like consistency, not assistance
+The plugin also keeps lightweight rocket bookkeeping in sync with TFDB (indexes, last positions, etc.), but no longer uses that data to force additional reflects or override rocket behavior.
 
 ---
 
-### 2. Target Bias Assistance
+## Scope and Safety
 
-**Lock-On Favoring**
+- Requires TF2Dodgeball (`TF2Dodgeball.smx`) and `tf2attributes.smx`.
+- Only touches:
+  - Pyro primary flamethrower in dodgeball.
+  - The `deflection size multiplier` attribute.
+- Does not:
+  - Modify stock TF2 outside dodgeball.
+  - Alter damage, projectile paths, or rocket logic.
+  - Add any client-side requirements.
 
-#### Purpose
-
-Helps the intended airblaster without preventing saves.
-
-#### Behavior
-
-If a rocket is locked onto a player, that player receives a slightly larger reflect window.
-
-#### Implementation
-
-```sourcepawn
-if (rocketTarget == client)
-{
-    reflectRadius *= 1.15;
-}
-```
-
-#### Notes
-
-- Teammates can still reflect
-- Reinforces personal responsibility
-- Integrates naturally with dodgeball lock-on logic
+If TFDB or `tf2attributes` is missing or not ready, the plugin safely does nothing.
 
 ---
 
-### 3. Sub-Tick Rocket Sweep
+## Player Perception
 
-**Core Hitreg Fix**
+Players should experience:
 
-#### Purpose
+- Fewer “it should have reflected” moments on close-range or fast rockets.
+- No noticeable change in basic dodgeball mechanics.
+- No delayed or “snapping” reflects caused by post-hoc correction.
 
-Eliminates projectile tunneling caused by:
-- High rocket speed
-- Low tick resolution
-- Discrete airblast hull checks
-
-#### Behavior
-
-Per tick:
-1. Store the rocket's previous position
-2. Perform a manual hull trace between last tick → current tick
-3. Detect intersections with the airblast hull
-
-#### Implementation
-
-```sourcepawn
-float lastPos[2048][3];
-
-public OnGameFrame()
-{
-    for (each dodgeball rocket)
-    {
-        float curPos[3];
-        GetEntPropVector(rocket, Prop_Data, "m_vecOrigin", curPos);
-
-        TraceHull(
-            lastPos[rocket],
-            curPos,
-            airblastHullMins,
-            airblastHullMaxs,
-            result
-        );
-
-        if (result.hit && PyroAirblastingNearby())
-        {
-            ReflectRocket();
-        }
-
-        lastPos[rocket] = curPos;
-    }
-}
-```
-
-#### Notes
-
-- Fully server-side
-- No visual snapping
-- Feels like better netcode
-- Must be limited to dodgeball rocket count
-
----
-
-### 4. Inflated Airblast Hull
-
-**Server-Side Only**
-
-#### Purpose
-
-Compensates for edge misses caused by:
-- Discrete collision checks
-- Fast projectile movement
-
-#### Behavior
-
-A custom, slightly larger hull is used only for reflect detection.
-
-#### Hull Definition
-
-```sourcepawn
-float mins[3] = { -40.0, -40.0, -40.0 };
-float maxs[3] = {  40.0,  40.0,  40.0 };
-```
-
-*(Default engine hull is approximately ±32)*
-
-#### Notes
-
-- Visual gameplay unchanged
-- Does not affect non-dodgeball gameplay
-- Used only during reflect checks
-
----
-
-### 5. Velocity-Scaled Forgiveness
-
-#### Purpose
-
-Prevents late-round rockets from becoming mechanically unreflectable.
-
-#### Behavior
-
-Reflect forgiveness scales with rocket speed.
-
-#### Implementation
-
-```sourcepawn
-float speed = GetVectorLength(rocketVel);
-
-float forgiveness = Clamp(speed / 3000.0, 1.0, 1.25);
-reflectRadius *= forgiveness;
-```
-
-#### Notes
-
-- Self-balancing
-- No effect on slow rockets
-- Maximum assistance capped at 25%
-
----
-
-## Per-Tick Execution Order
-
-1. Update rocket positions
-2. Perform sub-tick rocket sweep
-3. Check airblast timing grace window
-4. Apply lock-on target bias
-5. Apply velocity-scaled forgiveness
-6. Perform airblast hull check
-7. Reflect rocket if all conditions pass
-
----
-
-## Performance Constraints
-
-- Dodgeball rockets only
-- Rocket count is capped
-- No global entity scanning
-- One sweep trace per rocket per tick
-- Per-client grace window storage only
-
-Designed for 32-bit server stability.
-
----
-
-## Player Perception Goals
-
-### Players will say:
-
-- "Hitreg feels clean"
-- "Fast volleys are playable"
-- "This server just feels better"
-
-### Players will not:
-
-- Notice assistance
-- Detect automation
-- Feel skill compression
-
----
-
-## Summary
-
-UDLUltra does not make dodgeball easier.
-
-It makes dodgeball behave correctly under:
-- 32-bit limitations
-- Tick-based simulation
-- High-speed projectile gameplay
-
-**This is not helping players.**  
-**This is removing simulation error.**
+From a player’s point of view, the server simply has solid Pyro reflect hitreg in dodgeball.
