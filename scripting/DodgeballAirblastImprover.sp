@@ -159,15 +159,15 @@ static float UDL_ComputeSphereRadius(int client)
 	float baseEdge = g_hCvarSphereBaseSize.FloatValue;
 	float mult = UDL_GetDeflectionSizeMultiplier(client);
 	float scale = 1.0 + mult;
-	float radius = (baseEdge * scale) * g_hCvarSphereScale.FloatValue;
+	float diameter = (baseEdge * scale) * g_hCvarSphereScale.FloatValue;
 
 	float maxRange = g_hCvarSphereMaxRange.FloatValue;
-	if (maxRange > 0.0 && radius > maxRange)
+	if (maxRange > 0.0 && diameter > maxRange)
 	{
-		radius = maxRange;
+		diameter = maxRange;
 	}
 
-	return radius;
+	return diameter * 0.5;
 }
 
 static bool UDL_IsAnyRocketInSphere(int client, float radius)
@@ -177,8 +177,17 @@ static bool UDL_IsAnyRocketInSphere(int client, float radius)
 		return false;
 	}
 
-	float clientPos[3];
-	GetClientEyePosition(client, clientPos);
+	float center[3];
+	GetClientEyePosition(client, center);
+
+	float eyeAngles[3];
+	float dir[3];
+	GetClientEyeAngles(client, eyeAngles);
+	GetAngleVectors(eyeAngles, dir, NULL_VECTOR, NULL_VECTOR);
+
+	float forwardOffset = (radius >= 128.0) ? 128.0 : radius;
+	ScaleVector(dir, forwardOffset);
+	AddVectors(center, dir, center);
 
 	float radiusSq = radius * radius;
 
@@ -198,7 +207,7 @@ static bool UDL_IsAnyRocketInSphere(int client, float radius)
 		float rocketPos[3];
 		GetEntPropVector(rocketEnt, Prop_Send, "m_vecOrigin", rocketPos);
 
-		float distSq = GetVectorDistance(clientPos, rocketPos, true);
+		float distSq = GetVectorDistance(center, rocketPos, true);
 		if (distSq <= radiusSq)
 		{
 			return true;
@@ -253,7 +262,7 @@ static void UDL_SuppressDeflectAttribute(int client)
 	int userid = GetClientUserId(client);
 	if (userid != 0)
 	{
-		CreateTimer(0.0, UDL_TimerRestoreDeflectAttribute, userid);
+		CreateTimer(0.1, UDL_TimerRestoreDeflectAttribute, userid);
 	}
 }
 
@@ -367,15 +376,23 @@ public Action TFDB_OnRocketDeflectPre(int iIndex, int iEntity, int iOwner, int &
 		return Plugin_Continue;
 	}
 
-	float clientPos[3];
-	GetClientEyePosition(iOwner, clientPos);
+	float center[3];
+	GetClientEyePosition(iOwner, center);
+
+	float eyeAngles[3];
+	float dir[3];
+	GetClientEyeAngles(iOwner, eyeAngles);
+	GetAngleVectors(eyeAngles, dir, NULL_VECTOR, NULL_VECTOR);
+
+	float radius = UDL_ComputeSphereRadius(iOwner);
+	float forwardOffset = (radius >= 128.0) ? 128.0 : radius;
+	ScaleVector(dir, forwardOffset);
+	AddVectors(center, dir, center);
 
 	float rocketPos[3];
 	GetEntPropVector(iEntity, Prop_Send, "m_vecOrigin", rocketPos);
 
-	float radius = UDL_ComputeSphereRadius(iOwner);
-
-	float dist = GetVectorDistance(clientPos, rocketPos);
+	float dist = GetVectorDistance(center, rocketPos);
 	if (dist > radius)
 	{
 		if (g_hCvarSphereDebug.BoolValue)
