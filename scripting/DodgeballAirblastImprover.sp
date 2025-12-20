@@ -54,7 +54,7 @@ static void UDL_ApplyAirblastAttributes(int client)
 		return;
 	}
 
-	TF2Attrib_SetByName(weapon, "deflection size multiplier", 0.17);
+	TF2Attrib_SetByName(weapon, "deflection size multiplier", 0.12);
 }
 
 public void UDL_OnPlayerSpawn(Event event, const char[] name, bool dontBroadcast)
