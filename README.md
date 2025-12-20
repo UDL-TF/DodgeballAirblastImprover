@@ -8,6 +8,18 @@ Rockets are still reflected by the game engine. The plugin only tweaks how far t
 
 ---
 
+## Diagram and Context
+
+Most TFDB servers run in 32-Bit, this means that the "cone" check that people are familiar with does not actually do anything/work. So the result is that anything within the green box will be airblasted/deflected. Unfortunately, there is a huge issue with this, it can feel inconsistent due to variance in range when yaw changes and it can allow deflection of rockets not being aimed at.
+
+<img width="785" height="1099" alt="image" src="https://github.com/user-attachments/assets/eaa6f8d2-6d5a-4dd1-ad27-22f9a5e0a605" />
+
+The plugin fixes this issue on 32-Bit, and with a more TFDB beneficial solution than the working cone check in 64-Bit. By using a sphere check inside of a bigger base cube airblast, yaw variation is eliminated and deflects should feel more consistent and be visually accurate (no deflection of rockets not aiming at or behind). With a hard limit (the pink line) on the total range. By default, the plugin slightly extends this range to provide slightly more leniency for interpolation causing earlier airblast presses and this also helps on faster rockets where rockets could move too quickly inside range over ticks to register. 
+
+The result is much more consistent, enjoyable gameplay.
+
+---
+
 ## What It Does Now
 
 - Uses `tf2attributes` to apply the `deflection size multiplier` attribute to Pyro flamethrowers while TF2Dodgeball is active.
