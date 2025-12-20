@@ -159,7 +159,7 @@ static float UDL_ComputeSphereRadius(int client)
 	float baseEdge = g_hCvarSphereBaseSize.FloatValue;
 	float mult = UDL_GetDeflectionSizeMultiplier(client);
 	float scale = 1.0 + mult;
-	float radius = (baseEdge * scale * 0.5) * g_hCvarSphereScale.FloatValue;
+	float radius = (baseEdge * scale) * g_hCvarSphereScale.FloatValue;
 
 	float maxRange = g_hCvarSphereMaxRange.FloatValue;
 	if (maxRange > 0.0 && radius > maxRange)
