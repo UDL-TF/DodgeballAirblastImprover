@@ -21,7 +21,7 @@ The result is that reflects feel more consistent and less “just outside range�
 
 ## Design Philosophy
 
-- Real reflects only (no artificial `TFDB_ForceReflect` calls).
+- Use only the game’s native reflect logic.
 - Adjust the underlying airblast attribute instead of simulating extra hits.
 - Dodgeball rockets only.
 - Preserve the skill ceiling and timing; keep the change subtle.
@@ -38,8 +38,8 @@ File: `scripting/DodgeballAirblastImprover.sp`
 The plugin:
 
 - Includes `tf2attributes` and `tfdb`.
-- On plugin start, resets internal state and hooks the `player_spawn` event.
-- When a player spawns, and on map load for already connected players, it:
+- On plugin start, hooks the `player_spawn` event and immediately applies attributes to any already connected clients.
+- When a player spawns (or on plugin load for existing players), it:
   - Checks that TF2Dodgeball is available and enabled.
   - Checks that `tf2attributes` is available and ready.
   - If the client is a Pyro, finds their primary weapon and, if it is a flamethrower, applies:
@@ -49,8 +49,6 @@ TF2Attrib_SetByName(weapon, "deflection size multiplier", 0.2);
 ```
 
 This value is chosen to be a small, noticeable bump in reflect consistency rather than a dramatic range increase.
-
-The plugin also keeps lightweight rocket bookkeeping in sync with TFDB (indexes, last positions, etc.), but no longer uses that data to force additional reflects or override rocket behavior.
 
 ---
 
