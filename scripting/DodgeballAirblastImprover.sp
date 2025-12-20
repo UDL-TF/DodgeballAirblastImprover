@@ -4,6 +4,7 @@
 #include <tf2_stocks>
 #include <tf2attributes>
 #include <tfdb>
+#include <halflife>
 
 public Plugin myinfo =
 {
@@ -18,6 +19,7 @@ ConVar g_hCvarSphereGateEnable;
 ConVar g_hCvarSphereBaseSize;
 ConVar g_hCvarSphereScale;
 ConVar g_hCvarSphereMaxRange;
+ConVar g_hCvarSphereDebug;
 
 static void UDL_ApplyAirblastAttributes(int client)
 {
@@ -79,6 +81,7 @@ public void OnPluginStart()
 	g_hCvarSphereBaseSize   = CreateConVar("sm_tfdb_airblast_sphere_base", "256.0", "Base size used to derive sphere radius (cube edge length)");
 	g_hCvarSphereScale      = CreateConVar("sm_tfdb_airblast_sphere_scale", "1.0", "Extra scalar applied to computed sphere radius");
 	g_hCvarSphereMaxRange   = CreateConVar("sm_tfdb_airblast_max_range", "280.0", "Hard maximum straight-line airblast range for rockets (0 = no cap)");
+	g_hCvarSphereDebug      = CreateConVar("sm_tfdb_airblast_sphere_debug", "0", "Print debug when sphere gate cancels a rocket deflect (1=on,0=off)");
 
 	HookEvent("player_spawn", UDL_OnPlayerSpawn, EventHookMode_Post);
 
@@ -147,6 +150,84 @@ static float UDL_GetDeflectionSizeMultiplier(int client)
 	return mult;
 }
 
+static bool UDL_HasRocketWithinSphere(int client)
+{
+	if (!LibraryExists("tfdb"))
+	{
+		return false;
+	}
+
+	if (!TFDB_IsDodgeballEnabled())
+	{
+		return false;
+	}
+
+	float clientPos[3];
+	GetClientEyePosition(client, clientPos);
+
+	float baseEdge = g_hCvarSphereBaseSize.FloatValue;
+	float mult = UDL_GetDeflectionSizeMultiplier(client);
+	float scale = 1.0 + mult;
+	float radius = (baseEdge * scale * 0.5) * g_hCvarSphereScale.FloatValue;
+
+	float maxRange = g_hCvarSphereMaxRange.FloatValue;
+	if (maxRange > 0.0 && radius > maxRange)
+	{
+		radius = maxRange;
+	}
+
+	for (int i = 0; i < MAX_ROCKETS; i++)
+	{
+		if (!TFDB_IsValidRocket(i))
+		{
+			continue;
+		}
+
+		int entity = TFDB_GetRocketEntity(i);
+		if (!IsValidEntity(entity))
+		{
+			continue;
+		}
+
+		float rocketPos[3];
+		GetEntPropVector(entity, Prop_Send, "m_vecOrigin", rocketPos);
+
+		float dist = GetVectorDistance(clientPos, rocketPos);
+		if (dist <= radius)
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+public Action OnPlayerRunCmd(int client, int &buttons, int &impulse, float vel[3], float angles[3], int &weapon, int &subtype, int &cmdnum, int &tickcount, int &seed, int mouse[2])
+{
+	if (!g_hCvarSphereGateEnable.BoolValue)
+	{
+		return Plugin_Continue;
+	}
+
+	if (!UDL_IsPyro(client))
+	{
+		return Plugin_Continue;
+	}
+
+	if (!(buttons & IN_ATTACK2))
+	{
+		return Plugin_Continue;
+	}
+
+	if (UDL_HasRocketWithinSphere(client))
+	{
+		return Plugin_Continue;
+	}
+
+	buttons &= ~IN_ATTACK2;
+	return Plugin_Changed;
+}
+
 public Action TFDB_OnRocketDeflectPre(int iIndex, int iEntity, int iOwner, int &iTarget)
 {
 	if (!g_hCvarSphereGateEnable.BoolValue)
@@ -184,6 +265,10 @@ public Action TFDB_OnRocketDeflectPre(int iIndex, int iEntity, int iOwner, int &
 	float dist = GetVectorDistance(clientPos, rocketPos);
 	if (dist > radius)
 	{
+		if (g_hCvarSphereDebug.BoolValue && UDL_IsClientValid(iOwner))
+		{
+			PrintToChat(iOwner, "[TFDB] Sphere gate blocked deflect: dist=%.1f, radius=%.1f", dist, radius);
+		}
 		TFDB_SetRocketEventDeflections(iIndex, TFDB_GetRocketDeflections(iIndex));
 		return Plugin_Stop;
 	}
