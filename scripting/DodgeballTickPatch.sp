@@ -1,6 +1,7 @@
 #include <sourcemod>
 #include <sdktools>
 #include <sdktools_trace>
+#include <sdkhooks>
 #include <tf2>
 #include <tf2_stocks>
 #include <tfdb>
@@ -26,6 +27,22 @@ bool g_bHasTFDBGetFlags;
 bool g_bHasTFDBEventDefs;
 bool g_bHasTFDBDefs;
 bool g_bHasTFDBState;
+bool g_bHasTFDBFindRocket;
+
+static void DBTick_HookDamageForClient(int client)
+{
+	if (client <= 0 || client > MaxClients)
+	{
+		return;
+	}
+
+	if (!IsClientInGame(client))
+	{
+		return;
+	}
+
+	SDKHook(client, SDKHook_OnTakeDamageAlive, OnPlayerTakeDamage);
+}
 
 static bool UDL_IsClientValid(int client)
 {
@@ -83,9 +100,15 @@ public void OnPluginStart()
 		&& GetFeatureStatus(FeatureType_Native, "TFDB_SetRocketDeflections") == FeatureStatus_Available;
 	g_bHasTFDBState = GetFeatureStatus(FeatureType_Native, "TFDB_GetRocketState") == FeatureStatus_Available
 		&& GetFeatureStatus(FeatureType_Native, "TFDB_SetRocketState") == FeatureStatus_Available;
+	g_bHasTFDBFindRocket = GetFeatureStatus(FeatureType_Native, "TFDB_FindRocketByEntity") == FeatureStatus_Available;
 
 	HookEvent("player_spawn", DBTick_OnPlayerSpawn, EventHookMode_Post);
 	HookEvent("player_death", DBTick_OnPlayerDeath, EventHookMode_Post);
+
+	for (int i = 1; i <= MaxClients; i++)
+	{
+		DBTick_HookDamageForClient(i);
+	}
 }
 
 public void OnMapStart()
@@ -108,6 +131,8 @@ public void OnClientPutInServer(int client)
 	g_iLastAirblastTick[client] = 0;
 	g_iLastButtons[client] = 0;
 	g_fLastAirblastTime[client] = 0.0;
+
+	DBTick_HookDamageForClient(client);
 }
 
 public void OnClientDisconnect(int client)
@@ -133,6 +158,8 @@ public void DBTick_OnPlayerSpawn(Event event, const char[] name, bool dontBroadc
 	g_iLastAirblastTick[client] = 0;
 	g_iLastButtons[client] = 0;
 	g_fLastAirblastTime[client] = 0.0;
+
+	DBTick_HookDamageForClient(client);
 }
 
 public void DBTick_OnPlayerDeath(Event event, const char[] name, bool dontBroadcast)
@@ -201,9 +228,9 @@ public Action OnPlayerRunCmd(int client, int &buttons, int &impulse, float vel[3
 	return Plugin_Continue;
 }
 
-public Action TFDB_OnRocketExplodePre(int iIndex, int iEntity)
+public Action OnPlayerTakeDamage(int victim, int &attacker, int &inflictor, float &damage, int &damagetype)
 {
-	if (!g_bHasTFDBForceReflect)
+	if (!UDL_IsPyro(victim))
 	{
 		return Plugin_Continue;
 	}
@@ -218,29 +245,128 @@ public Action TFDB_OnRocketExplodePre(int iIndex, int iEntity)
 		return Plugin_Continue;
 	}
 
-	if (!TFDB_IsValidRocket(iIndex))
+	if (!(damagetype & DMG_BLAST))
 	{
 		return Plugin_Continue;
 	}
 
-	if (g_bHasTFDBLastDeflectTime)
+	int rocketEnt = inflictor;
+	if (rocketEnt <= 0 || !IsValidEntity(rocketEnt))
 	{
-		float lastDeflect = TFDB_GetRocketLastDeflectionTime(iIndex);
-		if (lastDeflect > 0.0 && (GetGameTime() - lastDeflect) < 0.05)
-		{
-			return Plugin_Continue;
-		}
+		rocketEnt = attacker;
 	}
 
-	if (g_bHasTFDBGetFlags)
+	if (rocketEnt <= 0 || !IsValidEntity(rocketEnt))
 	{
-		RocketFlags flags = TFDB_GetRocketFlags(iIndex);
-		if (TestFlags(flags, RocketFlag_Exploded))
-		{
-			return Plugin_Continue;
-		}
+		return Plugin_Continue;
 	}
 
+	char cls[64];
+	GetEdictClassname(rocketEnt, cls, sizeof(cls));
+	if (!StrContains(cls, "tf_projectile_rocket", false) && !StrContains(cls, "tf_projectile_pipe", false))
+	{
+		return Plugin_Continue;
+	}
+
+	float rocketPos[3];
+	if (HasEntProp(rocketEnt, Prop_Data, "m_vecAbsOrigin"))
+	{
+		GetEntPropVector(rocketEnt, Prop_Data, "m_vecAbsOrigin", rocketPos);
+	}
+	else
+	{
+		GetEntPropVector(rocketEnt, Prop_Send, "m_vecOrigin", rocketPos);
+	}
+
+	float eye[3];
+	float eyeAngles[3];
+	float dir[3];
+	float right[3];
+	float up[3];
+
+	GetClientEyePosition(victim, eye);
+	GetClientEyeAngles(victim, eyeAngles);
+	GetAngleVectors(eyeAngles, dir, right, up);
+
+	float to[3];
+	to[0] = rocketPos[0] - eye[0];
+	to[1] = rocketPos[1] - eye[1];
+	to[2] = rocketPos[2] - eye[2];
+
+	float forwardDist = GetVectorDotProduct(to, dir);
+	if (forwardDist <= 0.0)
+	{
+		return Plugin_Continue;
+	}
+
+	if (DB_TICKPATCH_MAX_RANGE > 0.0 && forwardDist > DB_TICKPATCH_MAX_RANGE)
+	{
+		return Plugin_Continue;
+	}
+
+	float side = FloatAbs(GetVectorDotProduct(to, right));
+	if (side > 140.0)
+	{
+		return Plugin_Continue;
+	}
+
+	float vert = FloatAbs(GetVectorDotProduct(to, up));
+	if (vert > 120.0)
+	{
+		return Plugin_Continue;
+	}
+
+	Handle trace = TR_TraceRayFilterEx(eye, rocketPos, MASK_SOLID_BRUSHONLY, RayType_EndPoint, DBTick_TraceFilter, rocketEnt);
+	bool blocked = TR_DidHit(trace) && TR_GetFraction(trace) < 0.99;
+	CloseHandle(trace);
+
+	if (blocked)
+	{
+		return Plugin_Continue;
+	}
+
+	int lastTick = g_iLastAirblastTick[victim];
+	int currentTick = GetGameTickCount();
+	int dtick = currentTick - lastTick;
+	if (dtick < 0 || dtick > 2)
+	{
+		return Plugin_Continue;
+	}
+
+	float lastTime = g_fLastAirblastTime[victim];
+	if (lastTime <= 0.0)
+	{
+		return Plugin_Continue;
+	}
+
+	float dt = GetGameTime() - lastTime;
+	if (dt > DB_TICKPATCH_MAX_INTENT_AGE)
+	{
+		return Plugin_Continue;
+	}
+
+	if (!g_bHasTFDBFindRocket)
+	{
+		return Plugin_Continue;
+	}
+
+	int iIndex = TFDB_FindRocketByEntity(rocketEnt);
+	if (iIndex <= 0)
+	{
+		return Plugin_Continue;
+	}
+
+	if (!DBTick_TryPatchReflect(iIndex, rocketEnt, victim))
+	{
+		return Plugin_Continue;
+	}
+
+	damage = 0.0;
+	return Plugin_Handled;
+}
+
+public Action TFDB_OnRocketExplodePre(int iIndex, int iEntity)
+{
 	if (iEntity <= MaxClients || !IsValidEntity(iEntity))
 	{
 		return Plugin_Continue;
@@ -347,14 +473,67 @@ public Action TFDB_OnRocketExplodePre(int iIndex, int iEntity)
 		return Plugin_Continue;
 	}
 
-	if (!UDL_IsPyro(bestPyro))
+	if (!DBTick_TryPatchReflect(iIndex, iEntity, bestPyro))
 	{
 		return Plugin_Continue;
 	}
 
-	if (!TFDB_ForceReflect(iIndex, bestPyro))
+	return Plugin_Handled;
+}
+
+static bool DBTick_TryPatchReflect(int iIndex, int iEntity, int pyroClient)
+{
+	if (!g_bHasTFDBForceReflect)
 	{
-		return Plugin_Continue;
+		return false;
+	}
+
+	if (!LibraryExists("tfdb"))
+	{
+		return false;
+	}
+
+	if (!TFDB_IsDodgeballEnabled())
+	{
+		return false;
+	}
+
+	if (!TFDB_IsValidRocket(iIndex))
+	{
+		return false;
+	}
+
+	if (!UDL_IsPyro(pyroClient))
+	{
+		return false;
+	}
+
+	if (g_bHasTFDBLastDeflectTime)
+	{
+		float lastDeflect = TFDB_GetRocketLastDeflectionTime(iIndex);
+		if (lastDeflect > 0.0 && (GetGameTime() - lastDeflect) < 0.05)
+		{
+			return false;
+		}
+	}
+
+	if (g_bHasTFDBGetFlags)
+	{
+		RocketFlags flags = TFDB_GetRocketFlags(iIndex);
+		if (TestFlags(flags, RocketFlag_Exploded))
+		{
+			return false;
+		}
+	}
+
+	if (iEntity <= MaxClients || !IsValidEntity(iEntity))
+	{
+		return false;
+	}
+
+	if (!TFDB_ForceReflect(iIndex, pyroClient))
+	{
+		return false;
 	}
 
 	if (g_bHasTFDBEventDefs)
@@ -380,5 +559,5 @@ public Action TFDB_OnRocketExplodePre(int iIndex, int iEntity)
 		TFDB_SetRocketLastDeflectionTime(iIndex, GetGameTime());
 	}
 
-	return Plugin_Handled;
+	return true;
 }
