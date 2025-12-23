@@ -21,6 +21,7 @@ public Plugin myinfo =
 int g_iLastAirblastTick[MAXPLAYERS + 1];
 int g_iLastButtons[MAXPLAYERS + 1];
 float g_fLastAirblastTime[MAXPLAYERS + 1];
+int g_iRocketDamageHandledTick[2049];
 bool g_bHasTFDBForceReflect;
 bool g_bHasTFDBLastDeflectTime;
 bool g_bHasTFDBGetFlags;
@@ -90,6 +91,11 @@ public void OnPluginStart()
 		g_fLastAirblastTime[i] = 0.0;
 	}
 
+	for (int i = 0; i < sizeof(g_iRocketDamageHandledTick); i++)
+	{
+		g_iRocketDamageHandledTick[i] = 0;
+	}
+
 	g_bHasTFDBForceReflect = GetFeatureStatus(FeatureType_Native, "TFDB_ForceReflect") == FeatureStatus_Available;
 	g_bHasTFDBLastDeflectTime = GetFeatureStatus(FeatureType_Native, "TFDB_GetRocketLastDeflectionTime") == FeatureStatus_Available
 		&& GetFeatureStatus(FeatureType_Native, "TFDB_SetRocketLastDeflectionTime") == FeatureStatus_Available;
@@ -118,6 +124,11 @@ public void OnMapStart()
 		g_iLastAirblastTick[i] = 0;
 		g_iLastButtons[i] = 0;
 		g_fLastAirblastTime[i] = 0.0;
+	}
+
+	for (int i = 0; i < sizeof(g_iRocketDamageHandledTick); i++)
+	{
+		g_iRocketDamageHandledTick[i] = 0;
 	}
 }
 
@@ -261,6 +272,32 @@ public Action OnPlayerTakeDamage(int victim, int &attacker, int &inflictor, floa
 		return Plugin_Continue;
 	}
 
+	if (!g_bHasTFDBFindRocket)
+	{
+		return Plugin_Continue;
+	}
+
+	int iIndex = TFDB_FindRocketByEntity(rocketEnt);
+	if (iIndex <= 0)
+	{
+		return Plugin_Continue;
+	}
+
+	int tick = GetGameTickCount();
+	if (g_iRocketDamageHandledTick[iIndex] == tick)
+	{
+		return Plugin_Continue;
+	}
+
+	if (g_bHasTFDBLastDeflectTime)
+	{
+		float lastDef = TFDB_GetRocketLastDeflectionTime(iIndex);
+		if (lastDef > 0.0 && (GetGameTime() - lastDef) < 0.05)
+		{
+			return Plugin_Continue;
+		}
+	}
+
 	char cls[64];
 	GetEdictClassname(rocketEnt, cls, sizeof(cls));
 	if (!StrContains(cls, "tf_projectile_rocket", false) && !StrContains(cls, "tf_projectile_pipe", false))
@@ -326,8 +363,7 @@ public Action OnPlayerTakeDamage(int victim, int &attacker, int &inflictor, floa
 	}
 
 	int lastTick = g_iLastAirblastTick[victim];
-	int currentTick = GetGameTickCount();
-	int dtick = currentTick - lastTick;
+	int dtick = tick - lastTick;
 	if (dtick < 0 || dtick > 2)
 	{
 		return Plugin_Continue;
@@ -345,21 +381,12 @@ public Action OnPlayerTakeDamage(int victim, int &attacker, int &inflictor, floa
 		return Plugin_Continue;
 	}
 
-	if (!g_bHasTFDBFindRocket)
-	{
-		return Plugin_Continue;
-	}
-
-	int iIndex = TFDB_FindRocketByEntity(rocketEnt);
-	if (iIndex <= 0)
-	{
-		return Plugin_Continue;
-	}
-
 	if (!DBTick_TryPatchReflect(iIndex, rocketEnt, victim))
 	{
 		return Plugin_Continue;
 	}
+
+	g_iRocketDamageHandledTick[iIndex] = tick;
 
 	damage = 0.0;
 	return Plugin_Handled;
@@ -535,6 +562,24 @@ static bool DBTick_TryPatchReflect(int iIndex, int iEntity, int pyroClient)
 	{
 		return false;
 	}
+
+	float vel[3];
+	GetEntPropVector(iEntity, Prop_Data, "m_vecVelocity", vel);
+	NormalizeVector(vel, vel);
+	ScaleVector(vel, 50.0);
+
+	float pos[3];
+	if (HasEntProp(iEntity, Prop_Data, "m_vecAbsOrigin"))
+	{
+		GetEntPropVector(iEntity, Prop_Data, "m_vecAbsOrigin", pos);
+	}
+	else
+	{
+		GetEntPropVector(iEntity, Prop_Send, "m_vecOrigin", pos);
+	}
+
+	AddVectors(pos, vel, pos);
+	TeleportEntity(iEntity, pos, NULL_VECTOR, NULL_VECTOR);
 
 	if (g_bHasTFDBEventDefs)
 	{
