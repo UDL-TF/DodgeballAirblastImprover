@@ -1,4 +1,4 @@
-# Dodgeball Airblast Hitreg Improver
+# TF2 Dodgeball Airblast Improvements
 
 Ultra-light dodgeball airblast consistency plugin for TF2, now based entirely on real engine reflects.
 
@@ -76,3 +76,59 @@ Players should experience:
 - No delayed or “snapping” reflects caused by post-hoc correction.
 
 From a player’s point of view, the server simply has solid Pyro reflect hitreg in dodgeball.
+
+---
+
+## DodgeballTickPatch
+
+Ultra-light tick/intent patch that helps TF2Dodgeball notice legitimate reflects that the core plugin would otherwise miss because counters or timing do not line up perfectly.
+
+### What It Does
+
+- Hooks TF2Dodgeball rocket events and looks for rockets that would hit a Pyro who very recently airblasted.
+- When a valid, recent airblast is detected but TFDB did not produce a reflect, it:
+  - Calls the engine’s real `ForceReflect` so the rocket is deflected normally.
+  - Bumps TFDB’s internal `eventDeflections` counter one step ahead of `deflections` so the core plugin runs its own “new deflect” branch on the next think.
+  - Optionally cleans up TFDB rocket state flags so the rocket is not left stuck in drag or stolen states.
+- Leaves all normal, on-time reflects entirely to TFDB and the engine.
+
+The result is that “I clearly airblasted that” moments caused by unlucky server tick alignment now turn into real reflects and target retargets, using TFDB’s existing logic.
+
+### Intent Gate (No Free Reflects)
+
+To avoid free or buffered reflects, the plugin only helps when the Pyro’s intent is extremely recent:
+
+- Tracks the engine tick (`GetGameTickCount`) and game time of each airblast per client.
+- For each candidate rocket, requires:
+  - `dtick = currentTick - lastTick` in the range `0..2`.
+  - `dt = GetGameTime() - lastTime` ≤ `0.03` seconds.
+
+If either condition fails, the plugin does nothing and the rocket behaves exactly as vanilla TF2Dodgeball.
+
+This gives ±2 ticks of scheduling forgiveness and at most 30 ms of real intent while still preserving skill-based timing.
+
+### Implementation Overview
+
+File: `scripting/DodgeballTickPatch.sp`
+
+The plugin:
+
+- Includes `tfdb` and uses feature flags to only touch TFDB natives that exist on the running version.
+- On relevant rocket callbacks, checks:
+  - That TF2Dodgeball is loaded and the rocket belongs to dodgeball.
+  - That the victim is a Pyro with a very recent, valid airblast intent.
+- When it decides to help a reflect, it:
+  - Calls the engine reflect once, reusing the real shooter and weapon where possible.
+  - Updates `eventDeflections` and `deflections` so TFDB sees “one new deflect” on the next rocket think.
+  - Clears problematic `RocketState` flags (dragging or stolen) if that API is available.
+
+If any TFDB natives are missing, the plugin gracefully degrades to only calling the safe operations or doing nothing.
+
+### Scope and Safety
+
+- Requires TF2Dodgeball (`TF2Dodgeball.smx`).
+- Only touches dodgeball rockets and their reflect bookkeeping.
+- Does not:
+  - Add late or second-chance reflects outside the strict intent gate.
+  - Change damage, rocket speed, or general dodgeball rules.
+  - Affect normal TF2 gameplay outside TF2Dodgeball.
