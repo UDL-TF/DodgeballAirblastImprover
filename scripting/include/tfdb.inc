@@ -4,7 +4,7 @@
 #define _tfdb_included
 
 // ---- General settings -----------------------------------------------------------
-#define FPS_LOGIC_RATE          20.0
+#define FPS_LOGIC_RATE          100.0
 #define FPS_LOGIC_INTERVAL      1.0 / FPS_LOGIC_RATE
 
 // ---- Maximum structure sizes ----------------------------------------------------
@@ -160,7 +160,6 @@ native float TFDB_GetRocketClassDragTimeMax(int iClass);
 native void TFDB_SetRocketClassDragTimeMax(int iClass, float fMax);
 native void TFDB_SetRocketClassCount(int iCount);
 native void TFDB_SetRocketEntity(int iIndex, int iEntity);
-native bool TFDB_ForceReflect(int iIndex, int iClient);
 native int TFDB_GetRocketClassMaxBounces(int iClass);
 native void TFDB_SetRocketClassMaxBounces(int iClass, int iBounces);
 native void TFDB_GetSpawnersName(int iSpawnerClass, char[] strBuffer, int iMaxLen);
@@ -321,7 +320,6 @@ public void __pl_TFDB_SetNTVOptional()
 	MarkNativeAsOptional("TFDB_SetRocketClassDragTimeMax");
 	MarkNativeAsOptional("TFDB_SetRocketClassCount");
 	MarkNativeAsOptional("TFDB_SetRocketEntity");
-	MarkNativeAsOptional("TFDB_ForceReflect");
 	MarkNativeAsOptional("TFDB_GetRocketClassMaxBounces");
 	MarkNativeAsOptional("TFDB_SetRocketClassMaxBounces");
 	MarkNativeAsOptional("TFDB_GetSpawnersName");
