@@ -22,13 +22,14 @@ public Plugin myinfo =
 int g_iLastAirblastTick[MAXPLAYERS + 1];
 float g_fLastAirblastTime[MAXPLAYERS + 1];
 int g_iRocketDamageHandledTick[2049];
-bool g_bHasTFDBForceReflect;
 bool g_bHasTFDBLastDeflectTime;
 bool g_bHasTFDBGetFlags;
 bool g_bHasTFDBEventDefs;
 bool g_bHasTFDBDefs;
 bool g_bHasTFDBState;
 bool g_bHasTFDBFindRocket;
+bool g_bHasTFDBHomingThink;
+bool g_bHasTFDBOtherThink;
 Handle g_hFlameThrowerSecondaryAttack;
 ConVar g_cvDBTickDebug;
 
@@ -142,7 +143,6 @@ public void OnPluginStart()
 		g_iRocketDamageHandledTick[i] = 0;
 	}
 
-	g_bHasTFDBForceReflect = GetFeatureStatus(FeatureType_Native, "TFDB_ForceReflect") == FeatureStatus_Available;
 	g_bHasTFDBLastDeflectTime = GetFeatureStatus(FeatureType_Native, "TFDB_GetRocketLastDeflectionTime") == FeatureStatus_Available
 		&& GetFeatureStatus(FeatureType_Native, "TFDB_SetRocketLastDeflectionTime") == FeatureStatus_Available;
 	g_bHasTFDBGetFlags = GetFeatureStatus(FeatureType_Native, "TFDB_GetRocketFlags") == FeatureStatus_Available;
@@ -153,6 +153,8 @@ public void OnPluginStart()
 	g_bHasTFDBState = GetFeatureStatus(FeatureType_Native, "TFDB_GetRocketState") == FeatureStatus_Available
 		&& GetFeatureStatus(FeatureType_Native, "TFDB_SetRocketState") == FeatureStatus_Available;
 	g_bHasTFDBFindRocket = GetFeatureStatus(FeatureType_Native, "TFDB_FindRocketByEntity") == FeatureStatus_Available;
+	g_bHasTFDBHomingThink = GetFeatureStatus(FeatureType_Native, "TFDB_HomingRocketThink") == FeatureStatus_Available;
+	g_bHasTFDBOtherThink = GetFeatureStatus(FeatureType_Native, "TFDB_RocketOtherThink") == FeatureStatus_Available;
 
 	g_cvDBTickDebug = CreateConVar("sm_dbtick_debug", "1", "Debug TFDB airblast tick patch");
 
@@ -416,7 +418,7 @@ public Action TFDB_OnRocketExplodePre(int iIndex, int iEntity)
 	{
 		int lastTick = g_iLastAirblastTick[client];
 		int dtick = currentTick - lastTick;
-		if (dtick < 0 || dtick > 2)
+		if (dtick < 0 || dtick > 4)
 		{
 			continue;
 		}
@@ -508,11 +510,6 @@ public Action TFDB_OnRocketExplodePre(int iIndex, int iEntity)
 
 static bool DBTick_TryPatchReflect(int iIndex, int iEntity, int pyroClient)
 {
-	if (!g_bHasTFDBForceReflect)
-	{
-		return false;
-	}
-
 	if (!LibraryExists("tfdb"))
 	{
 		return false;
@@ -529,6 +526,11 @@ static bool DBTick_TryPatchReflect(int iIndex, int iEntity, int pyroClient)
 	}
 
 	if (!UDL_IsPyro(pyroClient))
+	{
+		return false;
+	}
+
+	if (iEntity <= MaxClients || !IsValidEntity(iEntity))
 	{
 		return false;
 	}
@@ -551,19 +553,21 @@ static bool DBTick_TryPatchReflect(int iIndex, int iEntity, int pyroClient)
 		}
 	}
 
-	if (iEntity <= MaxClients || !IsValidEntity(iEntity))
+	SetEntPropEnt(iEntity, Prop_Send, "m_hOwnerEntity", pyroClient);
+
+	if (!g_bHasTFDBDefs || !g_bHasTFDBEventDefs)
 	{
 		return false;
 	}
 
-	if (!TFDB_ForceReflect(iIndex, pyroClient))
-	{
-		return false;
-	}
+	int defs = TFDB_GetRocketDeflections(iIndex);
+	TFDB_SetRocketEventDeflections(iIndex, defs + 1);
 
-	if (g_cvDBTickDebug != null && g_cvDBTickDebug.BoolValue)
+	if (g_bHasTFDBState)
 	{
-		PrintToServer("[DBTick] PATCH REFLECT SUCCESS rocket=%d pyro=%N", iIndex, pyroClient);
+		RocketState state = TFDB_GetRocketState(iIndex);
+		state = view_as<RocketState>(state & ~(RocketState_Dragging | RocketState_Stolen));
+		TFDB_SetRocketState(iIndex, state);
 	}
 
 	float vel[3];
@@ -580,26 +584,18 @@ static bool DBTick_TryPatchReflect(int iIndex, int iEntity, int pyroClient)
 	{
 		GetEntPropVector(iEntity, Prop_Send, "m_vecOrigin", pos);
 	}
-
+	
 	AddVectors(pos, vel, pos);
 	TeleportEntity(iEntity, pos, NULL_VECTOR, NULL_VECTOR);
-
-	if (g_bHasTFDBDefs)
+	
+	if (g_bHasTFDBHomingThink)
 	{
-		int defs = TFDB_GetRocketDeflections(iIndex) + 1;
-		TFDB_SetRocketDeflections(iIndex, defs);
-
-		if (g_bHasTFDBEventDefs)
-		{
-			TFDB_SetRocketEventDeflections(iIndex, defs);
-		}
+		TFDB_HomingRocketThink(iIndex);
 	}
 
-	if (g_bHasTFDBState)
+	if (g_bHasTFDBOtherThink)
 	{
-		RocketState state = TFDB_GetRocketState(iIndex);
-		state = view_as<RocketState>(state & ~(RocketState_Dragging | RocketState_Stolen));
-		TFDB_SetRocketState(iIndex, state);
+		TFDB_RocketOtherThink(iIndex);
 	}
 
 	if (g_bHasTFDBLastDeflectTime)
@@ -607,5 +603,10 @@ static bool DBTick_TryPatchReflect(int iIndex, int iEntity, int pyroClient)
 		TFDB_SetRocketLastDeflectionTime(iIndex, GetGameTime());
 	}
 
+	if (g_cvDBTickDebug != null && g_cvDBTickDebug.BoolValue)
+	{
+		PrintToServer("[DBTick] PATCH SPOOF DEFLECT rocket=%d pyro=%N", iIndex, pyroClient);
+	}
+	
 	return true;
 }
