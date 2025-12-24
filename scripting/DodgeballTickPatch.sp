@@ -29,7 +29,6 @@ bool g_bHasTFDBDefs;
 bool g_bHasTFDBState;
 bool g_bHasTFDBFindRocket;
 bool g_bHasTFDBHomingThink;
-bool g_bHasTFDBOtherThink;
 Handle g_hFlameThrowerSecondaryAttack;
 ConVar g_cvDBTickDebug;
 
@@ -93,6 +92,39 @@ static void DBTick_HookDamageForClient(int client)
 	SDKHook(client, SDKHook_OnTakeDamageAlive, OnPlayerTakeDamage);
 }
 
+static void DBTick_HookFlameThrowerForClient(int client)
+{
+	if (client <= 0 || client > MaxClients)
+	{
+		return;
+	}
+
+	if (!IsClientInGame(client))
+	{
+		return;
+	}
+
+	if (TF2_GetPlayerClass(client) != TFClass_Pyro)
+	{
+		return;
+	}
+
+	int weapon = GetPlayerWeaponSlot(client, TFWeaponSlot_Primary);
+	if (weapon <= MaxClients || !IsValidEntity(weapon))
+	{
+		return;
+	}
+
+	char cls[64];
+	GetEdictClassname(weapon, cls, sizeof(cls));
+	if (!StrEqual(cls, "tf_weapon_flamethrower", false))
+	{
+		return;
+	}
+
+	DHookEntity(g_hFlameThrowerSecondaryAttack, false, weapon);
+}
+
 static bool UDL_IsClientValid(int client)
 {
 	return client > 0 && client <= MaxClients && IsClientInGame(client) && IsPlayerAlive(client);
@@ -154,7 +186,6 @@ public void OnPluginStart()
 		&& GetFeatureStatus(FeatureType_Native, "TFDB_SetRocketState") == FeatureStatus_Available;
 	g_bHasTFDBFindRocket = GetFeatureStatus(FeatureType_Native, "TFDB_FindRocketByEntity") == FeatureStatus_Available;
 	g_bHasTFDBHomingThink = GetFeatureStatus(FeatureType_Native, "TFDB_HomingRocketThink") == FeatureStatus_Available;
-	g_bHasTFDBOtherThink = GetFeatureStatus(FeatureType_Native, "TFDB_RocketOtherThink") == FeatureStatus_Available;
 
 	g_cvDBTickDebug = CreateConVar("sm_dbtick_debug", "1", "Debug TFDB airblast tick patch");
 
@@ -164,14 +195,13 @@ public void OnPluginStart()
 		SetFailState("Failed to create CTFFlameThrower::SecondaryAttack hook");
 	}
 
-	DHookEnableDetour(g_hFlameThrowerSecondaryAttack, false, Hook_FlameThrowerSecondaryAttack);
-
 	HookEvent("player_spawn", DBTick_OnPlayerSpawn, EventHookMode_Post);
 	HookEvent("player_death", DBTick_OnPlayerDeath, EventHookMode_Post);
 
 	for (int i = 1; i <= MaxClients; i++)
 	{
 		DBTick_HookDamageForClient(i);
+		DBTick_HookFlameThrowerForClient(i);
 	}
 }
 
@@ -200,6 +230,7 @@ public void OnClientPutInServer(int client)
 	g_fLastAirblastTime[client] = 0.0;
 
 	DBTick_HookDamageForClient(client);
+	DBTick_HookFlameThrowerForClient(client);
 }
 
 public void OnClientDisconnect(int client)
@@ -225,6 +256,7 @@ public void DBTick_OnPlayerSpawn(Event event, const char[] name, bool dontBroadc
 	g_fLastAirblastTime[client] = 0.0;
 
 	DBTick_HookDamageForClient(client);
+	DBTick_HookFlameThrowerForClient(client);
 }
 
 public void DBTick_OnPlayerDeath(Event event, const char[] name, bool dontBroadcast)
@@ -591,11 +623,6 @@ static bool DBTick_TryPatchReflect(int iIndex, int iEntity, int pyroClient)
 	if (g_bHasTFDBHomingThink)
 	{
 		TFDB_HomingRocketThink(iIndex);
-	}
-
-	if (g_bHasTFDBOtherThink)
-	{
-		TFDB_RocketOtherThink(iIndex);
 	}
 
 	if (g_bHasTFDBLastDeflectTime)
