@@ -2,6 +2,7 @@
 #include <sdktools>
 #include <sdktools_trace>
 #include <sdkhooks>
+#include <dhooks>
 #include <tf2>
 #include <tf2_stocks>
 #include <tfdb>
@@ -19,7 +20,6 @@ public Plugin myinfo =
 };
 
 int g_iLastAirblastTick[MAXPLAYERS + 1];
-int g_iLastButtons[MAXPLAYERS + 1];
 float g_fLastAirblastTime[MAXPLAYERS + 1];
 int g_iRocketDamageHandledTick[2049];
 bool g_bHasTFDBForceReflect;
@@ -29,6 +29,52 @@ bool g_bHasTFDBEventDefs;
 bool g_bHasTFDBDefs;
 bool g_bHasTFDBState;
 bool g_bHasTFDBFindRocket;
+Handle g_hFlameThrowerSecondaryAttack;
+ConVar g_cvDBTickDebug;
+
+public MRESReturn Hook_FlameThrowerSecondaryAttack(int pThis)
+{
+	if (!IsValidEntity(pThis))
+	{
+		return MRES_Ignored;
+	}
+
+	int owner = GetEntPropEnt(pThis, Prop_Send, "m_hOwnerEntity");
+	if (owner < 1 || owner > MaxClients)
+	{
+		return MRES_Ignored;
+	}
+
+	if (!IsClientInGame(owner) || !IsPlayerAlive(owner))
+	{
+		return MRES_Ignored;
+	}
+
+	if (TF2_GetPlayerClass(owner) != TFClass_Pyro)
+	{
+		return MRES_Ignored;
+	}
+
+	if (!LibraryExists("tfdb"))
+	{
+		return MRES_Ignored;
+	}
+
+	if (!TFDB_IsDodgeballEnabled())
+	{
+		return MRES_Ignored;
+	}
+
+	g_iLastAirblastTick[owner] = GetGameTickCount();
+	g_fLastAirblastTime[owner] = GetGameTime();
+
+	if (g_cvDBTickDebug != null && g_cvDBTickDebug.BoolValue)
+	{
+		PrintToServer("[DBTick] Airblast via DHooks: %N", owner);
+	}
+
+	return MRES_Ignored;
+}
 
 static void DBTick_HookDamageForClient(int client)
 {
@@ -42,6 +88,7 @@ static void DBTick_HookDamageForClient(int client)
 		return;
 	}
 
+	SDKHook(client, SDKHook_OnTakeDamage, OnPlayerTakeDamage);
 	SDKHook(client, SDKHook_OnTakeDamageAlive, OnPlayerTakeDamage);
 }
 
@@ -87,7 +134,6 @@ public void OnPluginStart()
 	for (int i = 1; i <= MaxClients; i++)
 	{
 		g_iLastAirblastTick[i] = 0;
-		g_iLastButtons[i] = 0;
 		g_fLastAirblastTime[i] = 0.0;
 	}
 
@@ -108,6 +154,16 @@ public void OnPluginStart()
 		&& GetFeatureStatus(FeatureType_Native, "TFDB_SetRocketState") == FeatureStatus_Available;
 	g_bHasTFDBFindRocket = GetFeatureStatus(FeatureType_Native, "TFDB_FindRocketByEntity") == FeatureStatus_Available;
 
+	g_cvDBTickDebug = CreateConVar("sm_dbtick_debug", "1", "Debug TFDB airblast tick patch");
+
+	g_hFlameThrowerSecondaryAttack = DHookCreate(294, HookType_Entity, ReturnType_Void, ThisPointer_CBaseEntity, Hook_FlameThrowerSecondaryAttack);
+	if (g_hFlameThrowerSecondaryAttack == null)
+	{
+		SetFailState("Failed to create CTFFlameThrower::SecondaryAttack hook");
+	}
+
+	DHookEnableDetour(g_hFlameThrowerSecondaryAttack, false, Hook_FlameThrowerSecondaryAttack);
+
 	HookEvent("player_spawn", DBTick_OnPlayerSpawn, EventHookMode_Post);
 	HookEvent("player_death", DBTick_OnPlayerDeath, EventHookMode_Post);
 
@@ -122,7 +178,6 @@ public void OnMapStart()
 	for (int i = 1; i <= MaxClients; i++)
 	{
 		g_iLastAirblastTick[i] = 0;
-		g_iLastButtons[i] = 0;
 		g_fLastAirblastTime[i] = 0.0;
 	}
 
@@ -140,7 +195,6 @@ public void OnClientPutInServer(int client)
 	}
 
 	g_iLastAirblastTick[client] = 0;
-	g_iLastButtons[client] = 0;
 	g_fLastAirblastTime[client] = 0.0;
 
 	DBTick_HookDamageForClient(client);
@@ -154,7 +208,6 @@ public void OnClientDisconnect(int client)
 	}
 
 	g_iLastAirblastTick[client] = 0;
-	g_iLastButtons[client] = 0;
 	g_fLastAirblastTime[client] = 0.0;
 }
 
@@ -167,7 +220,6 @@ public void DBTick_OnPlayerSpawn(Event event, const char[] name, bool dontBroadc
 	}
 
 	g_iLastAirblastTick[client] = 0;
-	g_iLastButtons[client] = 0;
 	g_fLastAirblastTime[client] = 0.0;
 
 	DBTick_HookDamageForClient(client);
@@ -182,61 +234,7 @@ public void DBTick_OnPlayerDeath(Event event, const char[] name, bool dontBroadc
 	}
 
 	g_iLastAirblastTick[client] = 0;
-	g_iLastButtons[client] = 0;
 	g_fLastAirblastTime[client] = 0.0;
-}
-
-public Action OnPlayerRunCmd(int client, int &buttons, int &impulse, float vel[3], float angles[3], int &weapon, int &subtype, int &cmdnum, int &tickcount, int &seed, int mouse[2])
-{
-	bool pressed = (buttons & IN_ATTACK2) != 0 && (g_iLastButtons[client] & IN_ATTACK2) == 0;
-	g_iLastButtons[client] = buttons;
-
-	if (!pressed)
-	{
-		return Plugin_Continue;
-	}
-
-	if (!UDL_IsPyro(client))
-	{
-		return Plugin_Continue;
-	}
-
-	if (!LibraryExists("tfdb"))
-	{
-		return Plugin_Continue;
-	}
-
-	if (!TFDB_IsDodgeballEnabled())
-	{
-		return Plugin_Continue;
-	}
-
-	int active = GetPlayerWeaponSlot(client, TFWeaponSlot_Primary);
-	if (active <= MaxClients || !IsValidEntity(active))
-	{
-		return Plugin_Continue;
-	}
-
-	char classname[64];
-	GetEdictClassname(active, classname, sizeof(classname));
-	if (!StrEqual(classname, "tf_weapon_flamethrower", false))
-	{
-		return Plugin_Continue;
-	}
-
-	if (HasEntProp(active, Prop_Send, "m_iClip1"))
-	{
-		int clip = GetEntProp(active, Prop_Send, "m_iClip1");
-		if (clip <= 0)
-		{
-			return Plugin_Continue;
-		}
-	}
-
-	g_iLastAirblastTick[client] = GetGameTickCount();
-	g_fLastAirblastTime[client] = GetGameTime();
-
-	return Plugin_Continue;
 }
 
 public Action OnPlayerTakeDamage(int victim, int &attacker, int &inflictor, float &damage, int &damagetype)
@@ -262,11 +260,6 @@ public Action OnPlayerTakeDamage(int victim, int &attacker, int &inflictor, floa
 	}
 
 	int rocketEnt = inflictor;
-	if (rocketEnt <= 0 || !IsValidEntity(rocketEnt))
-	{
-		rocketEnt = attacker;
-	}
-
 	if (rocketEnt <= 0 || !IsValidEntity(rocketEnt))
 	{
 		return Plugin_Continue;
@@ -300,7 +293,7 @@ public Action OnPlayerTakeDamage(int victim, int &attacker, int &inflictor, floa
 
 	char cls[64];
 	GetEdictClassname(rocketEnt, cls, sizeof(cls));
-	if (!StrContains(cls, "tf_projectile_rocket", false) && !StrContains(cls, "tf_projectile_pipe", false))
+	if (!StrEqual(cls, "tf_projectile_rocket", false))
 	{
 		return Plugin_Continue;
 	}
@@ -364,7 +357,7 @@ public Action OnPlayerTakeDamage(int victim, int &attacker, int &inflictor, floa
 
 	int lastTick = g_iLastAirblastTick[victim];
 	int dtick = tick - lastTick;
-	if (dtick < 0 || dtick > 2)
+	if (dtick < 0 || dtick > 4)
 	{
 		return Plugin_Continue;
 	}
@@ -379,6 +372,11 @@ public Action OnPlayerTakeDamage(int victim, int &attacker, int &inflictor, floa
 	if (dt > DB_TICKPATCH_MAX_INTENT_AGE)
 	{
 		return Plugin_Continue;
+	}
+
+	if (g_cvDBTickDebug != null && g_cvDBTickDebug.BoolValue)
+	{
+		PrintToServer("[DBTick] Direct-hit reflect attempt: rocket=%d pyro=%N", iIndex, victim);
 	}
 
 	if (!DBTick_TryPatchReflect(iIndex, rocketEnt, victim))
@@ -563,6 +561,11 @@ static bool DBTick_TryPatchReflect(int iIndex, int iEntity, int pyroClient)
 		return false;
 	}
 
+	if (g_cvDBTickDebug != null && g_cvDBTickDebug.BoolValue)
+	{
+		PrintToServer("[DBTick] PATCH REFLECT SUCCESS rocket=%d pyro=%N", iIndex, pyroClient);
+	}
+
 	float vel[3];
 	GetEntPropVector(iEntity, Prop_Data, "m_vecVelocity", vel);
 	NormalizeVector(vel, vel);
@@ -581,14 +584,14 @@ static bool DBTick_TryPatchReflect(int iIndex, int iEntity, int pyroClient)
 	AddVectors(pos, vel, pos);
 	TeleportEntity(iEntity, pos, NULL_VECTOR, NULL_VECTOR);
 
-	if (g_bHasTFDBEventDefs)
+	if (g_bHasTFDBDefs)
 	{
-		int eventDefs = TFDB_GetRocketEventDeflections(iIndex) + 1;
-		TFDB_SetRocketEventDeflections(iIndex, eventDefs);
+		int defs = TFDB_GetRocketDeflections(iIndex) + 1;
+		TFDB_SetRocketDeflections(iIndex, defs);
 
-		if (g_bHasTFDBDefs)
+		if (g_bHasTFDBEventDefs)
 		{
-			TFDB_SetRocketDeflections(iIndex, eventDefs - 1);
+			TFDB_SetRocketEventDeflections(iIndex, defs);
 		}
 	}
 
